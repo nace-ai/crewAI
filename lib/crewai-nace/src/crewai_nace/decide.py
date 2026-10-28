@@ -69,7 +69,7 @@ def _check_batch(
     for name, question in questions.items():
         if not isinstance(name, str) or not name:
             raise DecideError("question names must be non-empty strings")
-        built[name] = _wire(_as_question(question))
+        built[name] = _as_question(question)
     cap = MAX_QUESTIONS.get(model)
     if cap is not None and len(built) > cap:
         raise DecideError(f"{model} accepts at most {cap} questions")
@@ -79,12 +79,6 @@ def _check_batch(
         if len(images) > MAX_IMAGES:
             raise DecideError(f"{IMAGE_MODEL} accepts at most {MAX_IMAGES} images")
     return built
-
-
-def _wire(question: Noul | Choice | Score) -> Noul | Choice | Score:
-    if question.instructions is not None:
-        return question
-    return question.model_copy(update={"instructions": ""})
 
 
 def _state_text(output: Any) -> str:

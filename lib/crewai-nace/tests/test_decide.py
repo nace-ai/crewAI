@@ -196,13 +196,13 @@ class ContractTests(unittest.TestCase):
             self.assertIsInstance(sent["s"], Score)
             self.assertIsNone(sent["c"].criteria["b"])
 
-    def test_omitted_instructions_are_sent_as_an_empty_string(self):
+    def test_omitted_instructions_stay_none(self):
         question = Noul(criteria={"true": "yes", "false": "no"})
         fake = Fake(response(q=NoulAnswer(noul=0.1)))
         DrexGuardrail({"q": question}, fail_if=lambda n, a: False, client=fake)("text")
         sent = fake.calls[0]["questions"]["q"]
         self.assertIsNone(question.instructions)
-        self.assertEqual(sent.instructions, "")
+        self.assertIsNone(sent.instructions)
         self.assertEqual(sent.criteria, {"true": "yes", "false": "no"})
 
     def test_image_order_is_preserved_on_drex_max(self):
