@@ -2,9 +2,20 @@ import json
 import unittest
 from types import SimpleNamespace
 
-from nace_sdk import Choice, ChoiceAnswer, Noul, NoulAnswer, Score, ScoreAnswer, SystemOneResponse, Usage
+from nace_sdk import (
+    Choice,
+    ChoiceAnswer,
+    NaceUnprocessableEntityError,
+    Noul,
+    NoulAnswer,
+    Score,
+    ScoreAnswer,
+    SystemOneResponse,
+    Usage,
+)
 
 from crewai_nace import DecideError, DrexDecideTool, DrexGuardrail, drex_router
+from crewai_nace.decide import CLIENT_ID, open_client
 
 
 class Fake:
@@ -161,6 +172,94 @@ class ToolTests(unittest.TestCase):
         with self.assertRaises(DecideError):
             tool._run("draft", json.dumps("write a poem"))
         self.assertEqual(fake.calls, [])
+
+
+class ContractTests(unittest.TestCase):
+    def test_three_question_types_go_to_both_models(self):
+        questions = {
+            "n": Noul(instructions="n"),
+            "c": Choice(instructions="c", criteria={"a": "kept", "b": None}),
+            "s": Score(instructions="s", criteria=["low", "high"]),
+        }
+        answers = dict(
+            n=NoulAnswer(noul=0.1),
+            c=ChoiceAnswer(choice="a", confidence=0.6, probabilities={"a": 0.6, "b": 0.4}),
+            s=ScoreAnswer(score=0, confidence=0.5, legend=("low", "high"), probabilities={0: 0.5, 1: 0.5}),
+        )
+        for model in ("drex-v2.0", "drex-max"):
+            fake = Fake(response(**answers))
+            DrexGuardrail(questions, fail_if=lambda n, a: False, model=model, client=fake)("text")
+            sent = fake.calls[0]["questions"]
+            self.assertEqual(fake.calls[0]["model"], model)
+            self.assertIsInstance(sent["n"], Noul)
+            self.assertIsInstance(sent["c"], Choice)
+            self.assertIsInstance(sent["s"], Score)
+            self.assertIsNone(sent["c"].criteria["b"])
+
+    def test_omitted_instructions_are_sent_as_an_empty_string(self):
+        question = Noul(criteria={"true": "yes", "false": "no"})
+        fake = Fake(response(q=NoulAnswer(noul=0.1)))
+        DrexGuardrail({"q": question}, fail_if=lambda n, a: False, client=fake)("text")
+        sent = fake.calls[0]["questions"]["q"]
+        self.assertIsNone(question.instructions)
+        self.assertEqual(sent.instructions, "")
+        self.assertEqual(sent.criteria, {"true": "yes", "false": "no"})
+
+    def test_image_order_is_preserved_on_drex_max(self):
+        for images in (["only"], ["img-a", "img-b"], ["img-b", "img-a"]):
+            fake = Fake(response(q=NoulAnswer(noul=0.1)))
+            DrexGuardrail(
+                {"q": Noul(instructions="see")},
+                fail_if=lambda n, a: False,
+                model="drex-max",
+                images=images,
+                client=fake,
+            )("text")
+            self.assertEqual(fake.calls[0]["images"], images)
+            self.assertEqual(fake.calls[0]["model"], "drex-max")
+
+    def test_unknown_model_has_no_client_side_question_cap(self):
+        questions = {f"q{i}": Noul(instructions=f"q{i}") for i in range(17)}
+        answers = {f"q{i}": NoulAnswer(noul=0.1) for i in range(17)}
+        fake = Fake(response(**answers))
+        DrexGuardrail(questions, fail_if=lambda n, a: False, model="drex-latest", client=fake)("text")
+        self.assertEqual(fake.calls[0]["model"], "drex-latest")
+        self.assertEqual(len(fake.calls[0]["questions"]), 17)
+
+    def test_drex_v2_rejects_513_questions_before_the_call(self):
+        fake = Fake(response())
+        questions = {f"q{i}": Noul(instructions=f"q{i}") for i in range(513)}
+        with self.assertRaises(DecideError):
+            DrexGuardrail(questions, fail_if=lambda n, a: False, model="drex-v2.0", client=fake)
+        self.assertEqual(fake.calls, [])
+
+    def test_422_is_not_a_pass(self):
+        error = NaceUnprocessableEntityError(
+            422,
+            {"error": {"issues": [{"path": "questions.q.instructions", "message": "required"}]}},
+            {},
+        )
+        fake = Fake(error)
+        guard = DrexGuardrail({"q": Noul(instructions="q")}, fail_if=lambda n, a: False, client=fake)
+        with self.assertRaises(NaceUnprocessableEntityError) as caught:
+            guard("text")
+        self.assertEqual(caught.exception.issues[0]["path"], "questions.q.instructions")
+        self.assertEqual(caught.exception.issues[0]["message"], "required")
+
+    def test_open_client_keeps_the_sdk_retry_budget(self):
+        client = open_client(api_key="test-key", base_url="https://example.test")
+        try:
+            policy = client._retry
+            self.assertIn(429, policy.http_statuses)
+            self.assertIn(529, policy.http_statuses)
+            self.assertTrue(policy.respect_retry_after)
+            self.assertGreaterEqual(policy.timeout, 180)
+            self.assertNotEqual(policy.max_retries, 0)
+            self.assertGreaterEqual(client._config.timeout, 60)
+            self.assertEqual(client._config.default_headers["X-Nace-Client"], CLIENT_ID)
+            self.assertNotIn("User-Agent", client._config.default_headers)
+        finally:
+            client.close()
 
 
 if __name__ == "__main__":

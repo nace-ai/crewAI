@@ -2,7 +2,7 @@
 
 CrewAI hooks for Drex. Calls go through `nace-sdk` 0.2.0 (`NaceClient.system_one`). This package does not send HTTP itself.
 
-Both models are supported. Omit `model` and the call uses `drex-v2.0`, not `drex-latest`. Images require `model="drex-max"` and are rejected before the call otherwise. `drex-max` rejects more than 16 questions before the call. A free-form string is not a question.
+Omit `model` and the call uses `drex-v2.0`, not `drex-latest`. Any other non-empty id, including `drex-latest`, is forwarded. Images require `model="drex-max"` and are rejected before the call otherwise. `drex-max` rejects more than 16 questions before the call, and `drex-v2.0` rejects more than 512. An unknown id has no client-side question cap. A free-form string is not a question. Omitted instructions are sent as `""`. When this package creates the client, the HTTP timeout is 60 seconds, the retry budget is 180 seconds, and `X-Nace-Client` is `crewai-nace/0.1.0`. The SDK overwrites `User-Agent`, so this package does not set one.
 
 ## Task guardrail
 

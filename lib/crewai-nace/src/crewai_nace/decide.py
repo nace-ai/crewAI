@@ -4,7 +4,7 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-from nace_sdk import Choice, NaceClient, Noul, Score
+from nace_sdk import Choice, NaceClient, Noul, RetryPolicy, Score
 
 VERSION = "0.1.0"
 CLIENT_ID = f"crewai-nace/{VERSION}"
@@ -24,7 +24,13 @@ def open_client(
     api_key: str | None = None,
     base_url: str | None = None,
 ) -> NaceClient:
-    return NaceClient(api_key=api_key, base_url=base_url, client_info=CLIENT_ID)
+    return NaceClient(
+        api_key=api_key,
+        base_url=base_url,
+        client_info=CLIENT_ID,
+        timeout=60,
+        retry=RetryPolicy(timeout=180),
+    )
 
 
 def _model(model: str | None) -> str:
@@ -63,7 +69,7 @@ def _check_batch(
     for name, question in questions.items():
         if not isinstance(name, str) or not name:
             raise DecideError("question names must be non-empty strings")
-        built[name] = _as_question(question)
+        built[name] = _wire(_as_question(question))
     cap = MAX_QUESTIONS.get(model)
     if cap is not None and len(built) > cap:
         raise DecideError(f"{model} accepts at most {cap} questions")
@@ -73,6 +79,12 @@ def _check_batch(
         if len(images) > MAX_IMAGES:
             raise DecideError(f"{IMAGE_MODEL} accepts at most {MAX_IMAGES} images")
     return built
+
+
+def _wire(question: Noul | Choice | Score) -> Noul | Choice | Score:
+    if question.instructions is not None:
+        return question
+    return question.model_copy(update={"instructions": ""})
 
 
 def _state_text(output: Any) -> str:
@@ -150,7 +162,8 @@ class DrexGuardrail:
         if not failed:
             return True, output
         lines = [
-            f"{name} failed (probability {_probability(answer)})"
+            f"{name} failed (probability {_probability(answer)}; "
+            f"{json.dumps(answer.model_dump(mode='json'), default=str)})"
             for name, answer in failed
         ]
         return False, "\n".join(lines)
@@ -173,8 +186,11 @@ def drex_router(
     if isinstance(threshold, bool) or not isinstance(threshold, (int, float)):
         raise DecideError("threshold must be a number")
     chosen = _model(model)
-    question = Choice(instructions=instructions, criteria=dict(options))
-    _check_batch({"route": question}, chosen, None)
+    question = _check_batch(
+        {"route": Choice(instructions=instructions, criteria=dict(options))},
+        chosen,
+        None,
+    )["route"]
 
     def route(state: Any) -> str | None:
         text = _state_text(state)
